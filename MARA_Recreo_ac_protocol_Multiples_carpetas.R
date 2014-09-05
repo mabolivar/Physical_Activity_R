@@ -3,6 +3,7 @@
 #==============================================================================
 
 setwd("C:\\Users\\Manuel\\Documents\\MARA")
+setwd("C:\\Users\\ma.bolivar643\\Documents\\MARA")
 
 #==============================================================================
 # Required libraries
@@ -226,6 +227,7 @@ getobs <- function(dbDir, data, timeunit = "min"){
   use <- as.data.frame(use)
   
   #Counts per day
+  data[data$activity =="non-wear","intensityEV"] <- "non-wear"
   counts <- as.data.frame(tapply(data$axis1,INDEX=list(data$day_m2m,data$intensityEV),FUN=sum))
   names(counts) <- paste("cnts",names(counts),sep="_")
   minutes <- as.data.frame.ts(table(data$day_m2m,data$intensityEV))/tomin
@@ -237,8 +239,7 @@ getobs <- function(dbDir, data, timeunit = "min"){
   obs <- data.frame(PID,date,Measure,use,counts,minutes)  
   row.names(obs) <- NULL 
   return(obs)
-  
-  
+    
 }
 
 
@@ -265,6 +266,67 @@ readPack <- function(name,sheets){
   return(pack)
 }  
 
+checkNames <- function(folders = dir(".\\data")){
+  
+  for(fold in folders){
+    
+    inputdir <- paste(".\\data\\",fold,sep="")
+    
+    #Get datafiles names
+    dataFiles <- dir(inputdir, pattern = "(.+)agd")
+    #print(dataFiles)
+    ok <- grepl(pattern = "^[0-9]{4}[AB][0-9][_][0-9]{5}[_][0-9]{8}1sec[.]agd",
+                x = dataFiles)
+    cat(fold,"\n")
+    print(dataFiles[!ok])
+    cat("\n")
+  }
+}
+
+checkDates <- function(folders = dir(".\\data")){
+  sink(paste("dates_",as.Date(Sys.time()),".txt",collapse="",sep=""))
+  for(fold in folders[9:10]){
+    
+    inputdir <- paste(".\\data\\",fold,sep="")
+    
+    #Get datafiles names
+    dataFiles <- dir(inputdir, pattern = "(.+)agd")
+    
+    cat(fold,"\n")
+    for (d in dataFiles){
+      #Garbage collector
+      gc()
+      #Database location
+      dbDir <- paste(inputdir,"\\",d,sep="")
+      cat(d)
+      m <- regexec(pattern = "^[0-9]{4}[AB][0-9][_][0-9]{5}[_]([0-9]{8})1sec[.]agd", d)
+      date <-as.Date(regmatches(dataFiles[1],m)[[1]][2],format = "%Y%m%d")
+      date2 <-as.Date(regmatches(dataFiles[1],m)[[1]][2],format = "%d%m%Y")
+      
+      #Checks file size
+      if(file.info(dbDir)$size/1000<8000){
+        cat(d, "...........Wrong file size\n")
+      }else{
+        #0. Read data form the .agd files (SQLite database)
+        db <- readDatabase(dbDir)
+        data <- db$data
+        settings <- db$settings
+        
+        cat(d,"nameFileDate1:",as.character(date), "nameFileDate2:",as.character(date2),
+            " .agdDate:",as.character(as.Date(settings[18,3])),
+            "Equals1: ",as.Date(settings[18,3]) == date, "Equals2: ",as.Date(settings[18,3]) == date2)
+        cat("\n")
+        
+        as.character(as.POSIXct(as.numeric(635107112200000000*1.0e-7 - 62135596800),origin="1970-01-01 00:00:00", "GMT"))
+      }
+      
+    }
+    
+    cat("\n")
+  }
+  sink()
+}
+
 #=============================================================================
 # Main routine
 #=============================================================================
@@ -286,12 +348,13 @@ main <- function(){
   sink(paste(outputdir,"\\log_",as.Date(Sys.time()),".txt",collapse="",sep=""))
   cat("Log output:\n") 
   
-  for(fold in folders[3:9]){
+  for(fold in folders){
     
     inputdir <- paste(".\\data\\",fold,sep="")
     
     #Get datafiles names
-    dataFiles <- dir(inputdir)
+    dataFiles <- dir(inputdir, pattern = "(.+)agd")
+    
     cat(fold,"\n")
     #Read the PACK
     #pack <- readPack(packdir,sheets)  
@@ -327,6 +390,8 @@ main <- function(){
           #2 Data aggregation
           data15 <- aggregation(15, data)
           data60 <- aggregation(60, data)
+          
+          
           data15$activity <- rep("wear",nrow(data15)) #Activity (sleep, non-wear, wear/wake)
           data60$activity <- rep("wear",nrow(data60)) #Activity (sleep, non-wear, wear/wake)
           
@@ -350,6 +415,10 @@ main <- function(){
           hourstoremove <- c(0:8,10:23)
           data15 <- removeData(data15,toremove=c(hourstoremove),units="hours") 
           data60 <- removeData(data60,toremove=c(hourstoremove),units="hours")
+          #6.6 Extract Recreo minutes
+          minutestoremove <- c(0:14,45:59)
+          data15 <- removeData(data15,toremove=c(minutestoremove),units="minutes") 
+          data60 <- removeData(data60,toremove=c(minutestoremove),units="minutes")
           
           #7. Add intensity physical activity
           data15 <- mergingActivity(data15,data60)
@@ -361,7 +430,7 @@ main <- function(){
           
           #Copies the final data frame in the clipboard
           #write.csv(ob,file="clipboard", row.names=F)
-
+          
           adata<-rbind.fill(adata,ob)
           write.csv(adata,file=paste(outputdir,"\\",outputfile, sep="",collapse=""), row.names=F)
           
