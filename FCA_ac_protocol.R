@@ -2,7 +2,7 @@
 # Working directory
 #==============================================================================
 
-setwd("C:\\Users\\ma.bolivar643\\Dropbox\\Accelerometria\\MARA")
+setwd("C:\\Users\\ma.bolivar643\\Dropbox\\2. Uniandes Projects\\Accelerometria\\MARA\\Physical_Activity_R")
 
 #==============================================================================
 # Required libraries
@@ -13,7 +13,8 @@ library("sqldf")
 library("xlsx")
 library("Hmisc")
 library("scales")
-source(".\\R\\ADPP.R")
+library("chron")
+source(".\\ADPP.R")
 
 
 #==============================================================================
@@ -206,7 +207,7 @@ createQueryIntensity <- function(colName = "intensityEV", intensities = c("moder
 }
 
 # Builds a set of queries to extract physical activity related variables given a accelerometry data frame.
-getobs <- function(dbDir, data, timeunit = "min"){
+getobs <- function(dbDir, data, timeunit = "min", minweartime = 600){
   # Builds a set of queries to extract physical activity related variables given a accelerometry data frame.
   # Args:
   #   dbDir: The name of the file which the data were read from.
@@ -246,13 +247,13 @@ getobs <- function(dbDir, data, timeunit = "min"){
   
   
   #Extract the participant id
-  m<-regexec("\\\\[[:print:]]+\\\\([[:digit:]]+)([A-Z])([[:digit:]]).([[:digit:]]+).([[:digit:]]+)",dbDir)
+  m<-regexec("\\\\[[:print:]]+\\\\[A-Z]{3}[[:digit:]][A-Z][[:digit:]]{5}([[:digit:]]{3}) [[:print:]]([[:print:]]+)[[:print:]][0-9]",dbDir)
+  regmatches(dbDir, m)
   PID <- regmatches(dbDir, m)[[1]][2]
   PID <- as.data.frame(PID)
-  Measure <- regmatches(dbDir, m)[[1]][4]
+  Measure <- regmatches(dbDir, m)[[1]][3]
   Measure <- as.data.frame(Measure)
-  use <- regmatches(dbDir, m)[[1]][3]
-  use <- as.data.frame(use)
+
   
   #Query: Wearing time (min) per day
   q_wtpd <- paste("SELECT day_m2m, count(axis1)*1.0/",tomin," as wearTime, weekday 
@@ -260,7 +261,7 @@ getobs <- function(dbDir, data, timeunit = "min"){
                   GROUP BY day_m2m", sep="")
   
   #Query: valid days
-  q_vd <- paste("SELECT day_m2m, weekday FROM (",q_wtpd,") WHERE wearTime >= 600")
+  q_vd <- paste("SELECT day_m2m, weekday FROM (",q_wtpd,") WHERE wearTime >=", minweartime)
   
   #Query: number of valid days
   q_nvd <- paste("SELECT count(day_m2m) as valdays FROM (",q_vd,")")
@@ -464,7 +465,7 @@ getobs <- function(dbDir, data, timeunit = "min"){
   obs <- sqldf(q_full)
   valid <- ifelse(obs$valwkdays>=3 && obs$valwkend>=1,1,0)
   valid <- as.data.frame(valid)
-  obs <- cbind(Measure,PID,use, valid, obs)
+  obs <- cbind(Measure,PID, valid, obs)
   
   return(obs)
   
@@ -477,45 +478,16 @@ getobs <- function(dbDir, data, timeunit = "min"){
 }
 
 
-#Read PACK
-readPack <- function(name,sheets){
-  # Read the xlsx file of the participant checklist (PACK)
-  # Args:
-  #   name: The name of the file which the data is read from (Complete file path).
-  #   sheets: Workbook sheets to be readed.
-  # 
-  # Returns:
-  #   A data frame with the pack information.
-  
-  pack <- data.frame()
-  
-  for(sheet in sheets){
-    pack <- rbind(pack, (read.xlsx(name,sheetName=sheet,colClasses= "character",
-                                   startRow=2,as.data.frame=T,
-                                   stringsAsFactors=F)))
-  }
-  
-  #Extract the last digits of the device serial
-  pack[,1]<- substr(pack[,1], 1, 5) 
-  return(pack)
-}  
-
 #=============================================================================
 # Main routine
 #=============================================================================
 
-inputdir <- ".\\data_MARA"
+inputdir <- ".\\data"
 outputdir <- ".\\output"
-outputfile <- paste("COL PA MARA var_",as.Date(Sys.time()),".csv", sep="")
-packdir <- "PACK-MARA.xlsx"
-sheets <- c("COLEGIO 20 DE JULIO", "COLEGIO MANUELITA SAENZ",
-            "COLEGIO MONTEBELLO", "ISCOLE")
+outputfile <- paste("COL PA FCA var_",as.Date(Sys.time()),".csv", sep="")
 
-d <- "2103A3_10503_011120131sec.agd"
-d <- "2210A3_10500_051120131sec.agd"
-d <- "2228A3_10459_121120131sec.agd"
-d <- "2227A3_10476_051120131sec.agd"
-d <- "1117A3_10463_231020131sec.agd"
+d <- "NEO1D23110416 (2014-07-11)1sec.agd"
+d <- "NEO1D23110430 (2014-07-11)1sec.agd"
 
 main <- function(){
   
@@ -526,9 +498,6 @@ main <- function(){
   #Get datafiles names
   dataFiles <- dir(inputdir)
   
-  #Read the PACK
-  pack <- readPack(packdir,sheets)  
-  
   #Open Log output
   sink(paste(outputdir,"\\log.txt",collapse="",sep=""))
   cat("Log output:\n")  
@@ -537,6 +506,7 @@ main <- function(){
     #Database location
     dbDir <- paste(inputdir,"\\",d,sep="")
     cat(d)
+    valid<-T
     
     #Checks file size
     if(file.info(dbDir)$size/1000<8000){
@@ -548,7 +518,6 @@ main <- function(){
       settings <- db$settings
       
       #1. Quality control checks
-      valid <- qualityControlCheck(dbDir,data, settings, pack)
       epoch <- as.numeric(data[2,1]-data[1,1], units="secs")
       
       if(epoch == 1){
@@ -558,25 +527,18 @@ main <- function(){
         data15$activity <- rep("wear",nrow(data15)) #Activity (sleep, non-wear, wear/wake)
         data60$activity <- rep("wear",nrow(data60)) #Activity (sleep, non-wear, wear/wake)
         
-        #2.5. Cleaning (Remove last day of data)
+        #2.5. Cleaning (Remove invalid days day of data)
         udays <- unique(as.Date(data60$datetime))
         lastday <- max(udays)
-        data15 <- removeData(data15,toremove=c(lastday),units="days") 
-        data60 <- removeData(data60,toremove=c(lastday),units="days") 
+        valdays <- seq(from = as.Date("2014-06-12"),to = as.Date("2014-06-19"), by =1)
+        rmday <- udays[!(udays %in% valdays)]
+        data15 <- removeData(data15,toremove=c(rmday),units="days") 
+        data60 <- removeData(data60,toremove=c(rmday),units="days") 
         
-        #3. Sleep period
-        sleep <- sleepPeriods(data=data60,sleepOnsetHours= c(19,5), bedTimemin = 5,
-                              tolBsleepMatrix = matrix(c(0,24,10),1,3,byrow=T),
-                              tolMatrix = matrix(c(0,5,20,
-                                                   5,19,10,
-                                                   19,24,20),3,3,byrow=T),
-                              minSleepTime = 160, scanParam = "axis1",
-                              nonWearPSleep = T, nonWearInact = 90, nonWearTol = 2,
-                              nonWearscanParam = "axis1",
-                              overlap_frac = 0.9)
-        
-        data60$activity <- setActivitySNW(data60$activity,label="sleep",intv=sleep$sleep,minlength = 20)
-        data60$activity  <- setActivitySNW(data60$activity,label="non-wear",intv=sleep$sleepnw, minlength = 20)
+        #3. Cleaning (Remove sleep hours)
+        rmhours <- c(seq(0,5),seq(22,23))
+        data15 <- removeData(data15,toremove=c(rmhours),units="hours")
+        data60 <- removeData(data60,toremove=c(rmhours),units="hours")
         
         #4. Non-wear period
         nWP <- nonWearPeriods(data60, scanParam="axis1",innactivity=20,tolerance=0) #nonWearPeriods. Innactivity and tolerance in minutes
@@ -600,7 +562,8 @@ main <- function(){
         data60$intensityEV <- mapply(cut_points_evenson,epoch=60, data60$axis1)
         
         #8. Get the datafile observation for the final data frame(only wear periods)
-        ob <- getobs(dbDir,data15, timeunit="min")
+      
+        ob <- getobs(dbDir,data15, timeunit="min", minweartime=200)
         
   		  #Copies the final data frame in the clipboard
         #write.csv(ob,file="clipboard", row.names=F)
@@ -631,6 +594,12 @@ main <- function(){
 tryCatch(main(),finally=sink())
 
 #=============================================================================
+
+dat <- data15
+[data15$activity != "non-wear",]
+table(dat$intensityEV, dat$day_m2m)/4
+
+
 
 data60$activity <- as.factor(data60$activity)
 data60$intensityEV <- as.factor(data60$intensityEV) 
