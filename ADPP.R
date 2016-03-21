@@ -39,7 +39,7 @@ readDatabase <- function(dbDir){
   #     data: Data frame which contains the accelerometry data according to the parameters fixed in ActiLife software (i.e. sample rate, # of axis, steps, light and inclinometer). 
   #     settings: Data frame which contains all the device information and settings fixed in ActiLife Software (device serial, device version, subject name, epoch length, startdatetime, stopdatetime, downloaddatetime, etc.)
   
-  con <- dbConnect(drv="SQLite", dbname=dbDir)
+  con <- dbConnect(RSQLite::SQLite(), dbname=dbDir)
   
   ## list all tables
   tables <- dbListTables(con)
