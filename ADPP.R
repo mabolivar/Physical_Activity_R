@@ -20,8 +20,9 @@
 
 library("RSQLite")
 library("sqldf")
-#library("xlsx")
+library(lubridate)
 library("Hmisc")
+library(dplyr)
 
 #==============================================================================
 # Functions
@@ -83,7 +84,7 @@ aggregation <- function(newEpoch, data){
   #
   # Returns:
   #   A data frame aggregate in the new epoch. 
-   
+  
   currentEpoch <- as.numeric(data$datetime[2]-data$datetime[1],units="secs")
   epochRatio <- newEpoch/currentEpoch
   
@@ -107,34 +108,40 @@ aggregation <- function(newEpoch, data){
     names(datetime) <- "datetime"
     
     if(length(data$incline)==0){
-      data$incline = data$inclineOff*0+ data$inclineStanding*1 + data$inclineLying*2 + data$inclineSitting*3
+      data$incline <- -1
+      if(!is.null(data$inclineOff)){
+        data$incline <- data$inclineOff*0+ data$inclineStanding*1 + data$inclineLying*2 + data$inclineSitting*3
+      }
     }
     
-    #Query to aggregate axes, steps and lux
-    nocolms <- c("datetime","activity","incline","groups", "lux")
-    columns <- subset(names(data),subset=!(names(data) %in% nocolms))
-    columns <- sapply(columns, FUN = function(i) (paste("sum(",i,") as ",i)))
-    columns <- paste(columns,",avg(lux) as lux", collapse=", ")
-    
-    q_axis <- paste("SELECT groups,", columns, " FROM data GROUP BY groups")
+    if(length(data$lux)==0){
+      data$lux <- -1
+    }
     
     #Complete query (add activity and incline)
     notInclude <- c("datetime","inclineOff","inclineStanding","inclineSitting","inclineLying", "groups" )
     fcolumns <- names(data)[!(names(data)%in% notInclude)]
     fcolumns <- paste(fcolumns, collapse =", ")
-    q <- paste("SELECT ",fcolumns, 
-               "FROM ", 
-               "(SELECT groups, incline,max(counts) FROM ",
-               "(SELECT groups, incline, count(incline) as counts ",
-               "FROM data ",
-               "GROUP BY incline, groups ",
-               "ORDER BY groups, incline) ",
-               "GROUP BY groups) as i JOIN (",q_axis,") as a",
-               "ON a.groups=i.groups", collapse=" ")
     
-    data <- sqldf(q)
+    data4 <- data %>% tbl_df %>%
+      select(one_of(fcolumns),groups) %>%
+      group_by(groups) %>%
+      summarise(axis1 = sum(axis1),
+                axis2 = sum(axis2),
+                axis3 = sum(axis3),
+                steps = sum(steps),
+                lux = mean(lux))
     
-    data <- cbind(datetime, data)
+    dataInc <- data %>% tbl_df %>%
+      select(one_of(fcolumns),groups) %>%
+      group_by(groups,incline) %>%
+      summarise(count = n()) %>% ungroup %>%
+      group_by(groups) %>%
+      filter(count == max(count)) %>%
+      select(-count) %>%
+      distinct() %>% ungroup
+    
+    data <- cbind(datetime, data4, dataInc)
     data$vm <- sqrt(data[,2]^2+data[,3]^2+data[,4]^2) #Vector magnitude
     data$day_m2m <- as.Date(data$datetime) #Day midnight-to-midnight (12:00am-11:59pm)
     data$day_n2n <- as.Date(data$datetime-60*60*12) #Day noon-to-noon (12:00pm-11:59am)
@@ -224,8 +231,8 @@ sleepPeriods <- function(sleepOnsetHours= c(19,5), bedTimemin = 5,
                          minSleepTime = 160,
                          tolBsleepMatrix = matrix(c(0,24,10),1,3,byrow=T),
                          tolMatrix = matrix(c(0,5,20,
-                                                5,19,10,
-                                                19,24,20),3,3,byrow=T),
+                                              5,19,10,
+                                              19,24,20),3,3,byrow=T),
                          scanParam = c("axis1","axis2","axis3","vm"), data,
                          nonWearPSleep = F, nonWearInact = 90, nonWearTol = 2,
                          nonWearscanParam = c("axis1","axis2","axis3","vm"),
@@ -269,7 +276,7 @@ sleepPeriods <- function(sleepOnsetHours= c(19,5), bedTimemin = 5,
   newepoch <- 60 # New epoch to aggregate the data (60sec epochs are requiered to perform Sadeh's algorithm)
   data <- aggregation(newepoch,data)
   
-  data$hour <- hours(data$datetime)
+  data$hour <- hour(data$datetime)
   data$sleep <- sadehAlgrtm(data, scanParam)
   #If the inclinometer value == 0,the minuted is labeled as sleep
   for(i in seq(nrow(data))){
@@ -284,7 +291,7 @@ sleepPeriods <- function(sleepOnsetHours= c(19,5), bedTimemin = 5,
   
   Sidx <- 0 #index
   i <- 1 #actual row
-
+  
   while(i <= nrow(data)-(bedTimemin-1)){
     #First 5 consecutives minutes of sleep && sleep predefined interval between 7pm and 5:59am
     if(sum(data$sleep[i:(i+(bedTimemin-1))])==bedTimemin && (data$hour[i]>=sleepOnsetHours[1] || data$hour[i] <= sleepOnsetHours[2])){
@@ -381,7 +388,7 @@ sadehAlgrtm <- function(data, scanParam = c("axis1","axis2","axis3","vm")){
   }else if(scanParam == "vm"){
     counts <- sqrt((data$axis1)^2+(data$axis2)^2+(data$axis3)^2)
   }
-
+  
   for(i in seq((s+1),nrow(data)-s)){ #starts in obs 6 because it is the first window
     meanW5min <- mean(counts[(i-s):(i+s)])
     NAT <- sum(counts[(i-s):(i+s)]>=50 & counts[(i-s):(i+s)]<100)

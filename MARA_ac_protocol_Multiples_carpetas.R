@@ -2,7 +2,7 @@
 # Working directory
 #==============================================================================
 
-setwd("C:\\Users\\Manuel\\Documents\\MARA")
+setwd("C:/Users/Manuel/Dropbox/2. Uniandes Projects/Accelerometria/MARA/Physical_Activity_R")
 
 #==============================================================================
 # Required libraries
@@ -10,9 +10,9 @@ setwd("C:\\Users\\Manuel\\Documents\\MARA")
 
 library("RSQLite")
 library("sqldf")
-library("xlsx")
 library("Hmisc")
-source(".\\R\\ADPP.R")
+library(dplyr)
+source("ADPP.R")
 
 
 #==============================================================================
@@ -204,11 +204,35 @@ createQueryIntensity <- function(colName = "intensityEV", intensities = c("moder
   return(q)
 }
 
+#Get participant info for MARA participants
+getParticipantInfoMARA <- function(name){
+  m<-regexec("\\\\[[:print:]]+\\\\([[:digit:]]+)([A-Z])([[:digit:]]?).([[:digit:]]+).([[:digit:]]+)",name)
+  PID <- regmatches(name, m)[[1]][2]
+  PID <- as.data.frame(PID)
+  Measure <- regmatches(name, m)[[1]][4]
+  Measure <- as.data.frame(Measure)
+  use <- regmatches(name, m)[[1]][3]
+  use <- as.data.frame(use)
+  
+  Pinfo <- data.frame(PID,Measure,use)
+  return(Pinfo)
+}
+
+#Get participant info for Muevete Escolar participants
+getParticipantInfoMuevete <- function(name){
+  PID <- substr(name,1,6)
+  SchoolID <- substr(name,1,2)
+  RoomID <- substr(name,3,4)
+  Measure <- substr(name,16,17)
+  Pinfo <- data.frame(name,PID,SchoolID,RoomID,Measure)
+  return(Pinfo)
+}
+
 # Builds a set of queries to extract physical activity related variables given a accelerometry data frame.
-getobs <- function(dbDir, data, timeunit = "min"){
+getobs <- function(name, data, timeunit = "min"){
   # Builds a set of queries to extract physical activity related variables given a accelerometry data frame.
   # Args:
-  #   dbDir: The name of the file which the data were read from.
+  #   name: The name of the file which the data were read from.
   #   data: Accelerometry data frame plus activity and phisical intensity columns.
   #   timeunit: Time units for the time-derived variables. 
   # 
@@ -245,13 +269,7 @@ getobs <- function(dbDir, data, timeunit = "min"){
   
   
   #Extract the participant id
-  m<-regexec("\\\\[[:print:]]+\\\\([[:digit:]]+)([A-Z])([[:digit:]]?).([[:digit:]]+).([[:digit:]]+)",dbDir)
-  PID <- regmatches(dbDir, m)[[1]][2]
-  PID <- as.data.frame(PID)
-  Measure <- regmatches(dbDir, m)[[1]][4]
-  Measure <- as.data.frame(Measure)
-  use <- regmatches(dbDir, m)[[1]][3]
-  use <- as.data.frame(use)
+  Pinfo <- getParticipantInfoMuevete(name)
   
   #Query: Wearing time (min) per day
   q_wtpd <- paste("SELECT day_m2m, count(axis1)*1.0/",tomin," as wearTime, weekday 
@@ -463,7 +481,7 @@ getobs <- function(dbDir, data, timeunit = "min"){
   obs <- sqldf(q_full)
   valid <- ifelse(obs$valwkdays>=3 && obs$valwkend>=1,1,0)
   valid <- as.data.frame(valid)
-  obs <- cbind(Measure,PID,use, valid, obs)
+  obs <- cbind(Pinfo, valid, obs)
   
   return(obs)
   
@@ -499,132 +517,138 @@ readPack <- function(name,sheets){
   return(pack)
 }  
 
+#Find .agd files
+findagds <- function(path=getwd()){
+  #Obtain paths for all .agd files
+  agdpath <- list.files(path,all.files = T,
+                        recursive = T,
+                        pattern = ".agd") %>%
+    paste0(path,"/",.) 
+  
+  #Name
+  name <- strsplit(agdpath,split = "/") %>% 
+    sapply(FUN=tail,1)
+  
+  agds <- data_frame(name,
+                     size = file.size(agdpath)/1048576,
+                     agdpath)
+  return(agds)
+}
+
 #=============================================================================
 # Main routine
 #=============================================================================
 
-
-
 main <- function(){
-  folders <- dir(".\\data")
-  
+  inputdir <- "E:\\MUEVETE ESCOLAR"
   outputdir <- ".\\output"
-  outputfile <- paste("COL PA var_3_MARA_",as.Date(Sys.time()),".csv", sep="")
-  packdir <- "PACK-MARA.xlsx"
-  sheets <- c("COLEGIO 20 DE JULIO", "COLEGIO MANUELITA SAENZ",
-              "COLEGIO MONTEBELLO", "ISCOLE")
+  outputfile <- paste("COL MUEVETE",as.Date(Sys.time()),".csv", sep="")
+  
   #Time
   tnow <- Sys.time()   
   #Final data set
   adata <- data.frame()
   
   #Open Log output
-  sink(paste(outputdir,"\\log_",as.Date(Sys.time()),".txt",collapse="",sep=""))
+  sink(paste0(outputdir,"\\log_",as.Date(Sys.time()),".txt"))
   cat("Log output:\n") 
   
-  for(fold in folders){
+  #Get datafiles names
+  dataFiles <- findagds(inputdir)
+  dataFiles$validsize <- dataFiles$size >= 2 #Files greater than 2MB
+  dataFiles$epoch <- -1 #Initialization of epoch in -1
+  
+  for (i in 1:nrow(dataFiles)){
+    cat("\t",dataFiles$name[i])
+    if(dataFiles$validsize[i] == FALSE){
+      cat("........SKIPPED (Wrong size) \n")
+      next #If the .agd file have less than 10 MB, it will not be analyzed
+    }
     
-    inputdir <- paste(".\\data\\",fold,sep="")
-
-    #Get datafiles names
-    dataFiles <- dir(inputdir)
-    cat(fold,"\n")
-    #Read the PACK
-    #pack <- readPack(packdir,sheets)  
+    #Garbage collector
+    gc()
+    #Database location
+    dbDir <- dataFiles$agdpath[i]
     
-
+    #0. Read data form the .agd files (SQLite database)
+    db <- readDatabase(dbDir)
+    data <- db$data
+    settings <- db$settings
     
-    for (d in dataFiles){
-      #Garbage collector
-      gc()
-      #Database location
-      dbDir <- paste(inputdir,"\\",d,sep="")
-      cat("\t",d)
+    udays <- unique(as.Date(data$datetime))
+    firstday <- min(udays)
+    validdays <- seq(firstday,firstday+8,by=1) 
+    daystoremove <- udays[!(udays%in%validdays)]
+    data <- removeData(data,toremove=c(daystoremove),units="days") 
+    
+    #1. Quality control checks
+    #valid <- qualityControlCheck(dbDir,data, settings, pack)
+    valid <- T
+    dataFiles$epoch[i] <- as.numeric(data$datetime[2]-data$datetime[1], units="secs")
+    
+    if(dataFiles$epoch[i] == 1){
+      #2 Data aggregation
+      data15 <- aggregation(15, data)
+      data60 <- aggregation(60, data)
+      data15$activity <- rep("wear",nrow(data15)) #Activity (sleep, non-wear, wear/wake)
+      data60$activity <- rep("wear",nrow(data60)) #Activity (sleep, non-wear, wear/wake)
       
-      #0. Read data form the .agd files (SQLite database)
-      db <- readDatabase(dbDir)
-      data <- db$data
-      settings <- db$settings
+      #3. Sleep period
+      sleep <- sleepPeriods(data=data60,sleepOnsetHours= c(19,5), bedTimemin = 5,
+                            tolBsleepMatrix = matrix(c(0,24,10),1,3,byrow=T),
+                            tolMatrix = matrix(c(0,5,20,
+                                                 5,19,10,
+                                                 19,24,20),3,3,byrow=T),
+                            minSleepTime = 160, scanParam = "axis1",
+                            nonWearPSleep = T, nonWearInact = 90, nonWearTol = 2,
+                            nonWearscanParam = "axis1",
+                            overlap_frac = 0.9)
       
+      data60$activity <- setActivitySNW(data60$activity,label="sleep",intv=sleep$sleep,minlength = 20)
+      data60$activity  <- setActivitySNW(data60$activity,label="non-wear",intv=sleep$sleepnw, minlength = 20)
       
+      #4. Non-wear period
+      #ISCOLE non-wear 20 +-0min
+      #ACTILIFE non-wear 60 +-2min
+      nWP <- nonWearPeriods(data60, scanParam="axis1",innactivity=20,tolerance=0) #nonWearPeriods. Innactivity and tolerance in minutes
+      data60$activity  <- setActivitySNW(data60$activity,label="non-wear",nWP, minlength = 20)
       
-      udays <- unique(as.Date(data$datetime))
+      #5. Wear periods
+      data60 <- checkWearPeriods(data60,maxc = 20000)
+      
+      #6. Cleaning (Remove last day of data and more than 7 days of data)
+      udays <- unique(as.Date(data60$datetime))
       firstday <- min(udays)
-      validdays <- seq(firstday,firstday+8,by=1) 
+      lastday <- max(udays)
+      validdays <- seq(firstday,firstday+6,by=1) 
       daystoremove <- udays[!(udays%in%validdays)]
-      data <- removeData(data,toremove=c(daystoremove),units="days") 
-     
-      #1. Quality control checks
-      #valid <- qualityControlCheck(dbDir,data, settings, pack)
-      valid <- T
-      epoch <- as.numeric(data$datetime[2]-data$datetime[1], units="secs")
+      data15 <- removeData(data15,toremove=c(daystoremove,lastday),units="days") 
+      data60 <- removeData(data60,toremove=c(daystoremove,lastday),units="days") 
       
-      if(epoch == 1){
-        #2 Data aggregation
-        data15 <- aggregation(15, data)
-        data60 <- aggregation(60, data)
-        data15$activity <- rep("wear",nrow(data15)) #Activity (sleep, non-wear, wear/wake)
-        data60$activity <- rep("wear",nrow(data60)) #Activity (sleep, non-wear, wear/wake)
-        
-        #3. Sleep period
-        sleep <- sleepPeriods(data=data60,sleepOnsetHours= c(19,5), bedTimemin = 5,
-                              tolBsleepMatrix = matrix(c(0,24,10),1,3,byrow=T),
-                              tolMatrix = matrix(c(0,5,20,
-                                                   5,19,10,
-                                                   19,24,20),3,3,byrow=T),
-                              minSleepTime = 160, scanParam = "axis1",
-                              nonWearPSleep = T, nonWearInact = 90, nonWearTol = 2,
-                              nonWearscanParam = "axis1",
-                              overlap_frac = 0.9)
-        
-        data60$activity <- setActivitySNW(data60$activity,label="sleep",intv=sleep$sleep,minlength = 20)
-        data60$activity  <- setActivitySNW(data60$activity,label="non-wear",intv=sleep$sleepnw, minlength = 20)
-        
-        #4. Non-wear period
-        nWP <- nonWearPeriods(data60, scanParam="axis1",innactivity=40,tolerance=2) #nonWearPeriods. Innactivity and tolerance in minutes
-        data60$activity  <- setActivitySNW(data60$activity,label="non-wear",nWP, minlength = 20)
-        
-        #5. Wear periods
-        data60 <- checkWearPeriods(data60,maxc = 20000)
-        
-        #6. Cleaning (Remove last day of data and more than 7 days of data)
-        udays <- unique(as.Date(data60$datetime))
-        firstday <- min(udays)
-        lastday <- max(udays)
-        validdays <- seq(firstday,firstday+6,by=1) 
-        daystoremove <- udays[!(udays%in%validdays)]
-        data15 <- removeData(data15,toremove=c(daystoremove,lastday),units="days") 
-        data60 <- removeData(data60,toremove=c(daystoremove,lastday),units="days") 
-        
-        #7. Add intensity physical activity
-        data15 <- mergingActivity(data15,data60)
-        data15$intensityEV <- mapply(cut_points_evenson,epoch=15, data15$axis1)
-        data60$intensityEV <- mapply(cut_points_evenson,epoch=60, data60$axis1)
-        
-        #8. Get the datafile observation for the final data frame(only wear periods)
-        ob <- getobs(dbDir,data15, timeunit="min")
-        adata<-rbind(adata,ob)
-        write.csv(adata,file=paste(outputdir,"\\",outputfile, sep="",collapse=""), row.names=F)
-        
-        if(valid==T){
-          cat("........OK\n")
-        }else{
-          cat("........INVALID\n")
-        }
-        
+      #7. Add intensity physical activity
+      data15 <- mergingActivity(data15,data60)
+      data15$intensityEV <- mapply(cut_points_evenson,epoch=15, data15$axis1)
+      data60$intensityEV <- mapply(cut_points_evenson,epoch=60, data60$axis1)
+      
+      #8. Get the datafile observation for the final data frame(only wear periods)
+      ob <- getobs(dataFiles$name[i],data15, timeunit="min")
+      adata<-rbind(adata,ob)
+      write.csv(adata,file=paste(outputdir,"\\",outputfile, sep="",collapse=""), row.names=F)
+      
+      if(valid==T){
+        cat("........OK\n")
       }else{
-        cat("........SKIPPED (Wrong epoch) \n")
+        cat("........INVALID\n")
       }
       
-      #delete objects
-      rm(data)
-      rm(data15)
-      rm(data60)
+    }else{
+      cat("........SKIPPED (Wrong epoch) \n")
     }
   }
   
   sink()
-  write.csv(adata,file=paste(outputdir,"\\",outputfile, sep="",collapse=""), row.names=F)
+  write.csv(adata,file=paste0(outputdir,"\\",outputfile), row.names=F)
+  write.csv(dataFiles,file=paste0(outputdir,"\\",outputfile,"agd_info.csv"), row.names=F)
   
   print(paste("Total time:", as.numeric(Sys.time()-tnow,units="mins")," mins"))
 }
