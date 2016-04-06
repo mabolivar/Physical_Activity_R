@@ -2,7 +2,7 @@
 # Working directory
 #==============================================================================
 
-setwd("C:\\Users\\ma.bolivar643\\Dropbox\\Accelerometria\\MARA")
+setwd("C:/Users/Manuel/Dropbox/2. Uniandes Projects/Accelerometria/MARA")
 
 #==============================================================================
 # Required libraries
@@ -13,7 +13,7 @@ library("sqldf")
 library("xlsx")
 library("Hmisc")
 library("scales")
-source(".\\R\\ADPP.R")
+source(".\\Physical_Activity_R\\ADPP.R")
 
 
 #==============================================================================
